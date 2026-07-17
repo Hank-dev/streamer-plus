@@ -1,0 +1,96 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/linux/pkg_config.gni")
+import("//gni/openscreen.gni")
+
+pkg_config("libportal_config") {
+  packages = [ "libportal" ]
+}
+
+pkg_config("gstreamer_config") {
+  packages = [
+    "gstreamer-1.0",
+    "gstreamer-app-1.0",
+    "gstreamer-video-1.0",
+    "gstreamer-audio-1.0",
+  ]
+}
+
+openscreen_source_set("config") {
+  sources = [
+    "config.cc",
+    "config.h",
+  ]
+  deps = [
+    "//cast/streaming:common",
+    "//platform",
+  ]
+}
+
+openscreen_source_set("desktop_media_sender") {
+  testonly = true
+  sources = [
+    "desktop_media_sender.cc",
+    "desktop_media_sender.h",
+  ]
+  deps = [
+    ":capture",
+    "//cast/standalone_sender:cast_sender_core",
+    "//cast/streaming:common",
+    "//cast/streaming:sender",
+    "//platform",
+    "//util",
+  ]
+  public_configs = [ ":gstreamer_config" ]
+}
+
+openscreen_executable("streamer_plus") {
+  testonly = true
+  sources = [ "main.cc" ]
+  deps = [
+    ":capture",
+    ":config",
+    ":desktop_media_sender",
+    ":portal_screencast",
+    "//cast/standalone_sender:cast_sender_core",
+  ]
+}
+
+openscreen_source_set("capture") {
+  sources = [
+    "capture.cc",
+    "capture.h",
+    "drop_old_queue.h",
+  ]
+  deps = [ "//util" ]
+  public_configs = [ ":gstreamer_config" ]
+}
+
+openscreen_source_set("portal_screencast") {
+  sources = [
+    "portal_screencast.cc",
+    "portal_screencast.h",
+  ]
+  public_configs = [ ":libportal_config" ]
+}
+
+openscreen_executable("streamer_plus_unittests") {
+  testonly = true
+  sources = [
+    "capture_unittest.cc",
+    "config_unittest.cc",
+    "desktop_media_sender_unittest.cc",
+    "portal_screencast_unittest.cc",
+  ]
+  deps = [
+    ":capture",
+    ":config",
+    ":desktop_media_sender",
+    ":portal_screencast",
+    "//cast/standalone_sender:cast_sender_core",
+    "//test:test_main",
+    "//third_party/googletest:gtest",
+  ]
+}

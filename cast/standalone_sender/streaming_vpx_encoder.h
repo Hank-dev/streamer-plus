@@ -69,6 +69,12 @@ class StreamingVpxEncoder : public StreamingVideoEncoder {
                      Clock::time_point reference_time,
                      std::function<void(Stats)> stats_callback) override;
 
+  // Returns false when a frame is rejected before work is queued. A rejected
+  // frame never invokes |stats_callback|.
+  bool TryEncodeAndSend(const VideoFrame& frame,
+                        Clock::time_point reference_time,
+                        std::function<void(Stats)> stats_callback);
+
  private:
   // Syntactic convenience to wrap the vpx_image_t alloc/free API in a smart
   // pointer.

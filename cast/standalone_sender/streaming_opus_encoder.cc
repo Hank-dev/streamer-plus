@@ -66,6 +66,14 @@ int StreamingOpusEncoder::GetBitrate() const {
   return bitrate;
 }
 
+void StreamingOpusEncoder::SetBitrate(int bits_per_second) {
+  OSP_CHECK_GT(bits_per_second, 0);
+  const auto ctl_result =
+      opus_encoder_ctl(encoder(), OPUS_SET_BITRATE(bits_per_second));
+  OSP_CHECK_EQ(ctl_result, OPUS_OK);
+  UpdateCodecDelay();
+}
+
 void StreamingOpusEncoder::UseStandardQuality() {
   const auto ctl_result =
       opus_encoder_ctl(encoder(), OPUS_SET_BITRATE(OPUS_AUTO));

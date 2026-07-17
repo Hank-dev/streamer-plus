@@ -33,8 +33,27 @@ LoopingFileCastAgent::LoopingFileCastAgent(
     TaskRunner& task_runner,
     std::unique_ptr<TrustStore> cast_trust_store,
     ShutdownCallback shutdown_callback)
+    : LoopingFileCastAgent(
+          task_runner, std::move(cast_trust_store), std::move(shutdown_callback),
+          [](Environment& environment, const ConnectionSettings& settings,
+             const SenderSession* session, SenderSession::ConfiguredSenders senders,
+             capture_recommendations::Recommendations,
+             MediaSender::ShutdownCallback callback) {
+            return std::make_unique<LoopingFileSender>(
+                environment, settings, session, std::move(senders),
+                std::move(callback));
+          }) {
+  uses_default_media_sender_ = true;
+}
+
+LoopingFileCastAgent::LoopingFileCastAgent(
+    TaskRunner& task_runner,
+    std::unique_ptr<TrustStore> cast_trust_store,
+    ShutdownCallback shutdown_callback,
+    MediaSenderFactory media_sender_factory)
     : task_runner_(task_runner),
       shutdown_callback_(std::move(shutdown_callback)),
+      media_sender_factory_(std::move(media_sender_factory)),
       connection_handler_(router_, *this),
       socket_factory_(*this,
                       task_runner_,
@@ -55,6 +74,12 @@ void LoopingFileCastAgent::Connect(ConnectionSettings settings) {
   TRACE_DEFAULT_SCOPED(TraceCategory::kStandaloneSender);
 
   OSP_CHECK(!connection_settings_);
+  if (!media_sender_factory_ ||
+      (settings.use_remoting && !uses_default_media_sender_)) {
+    OSP_LOG_ERROR << "Custom media senders are only supported for mirroring.";
+    Shutdown();
+    return;
+  }
   connection_settings_ = std::move(settings);
   const auto policy = connection_settings_->should_include_video
                           ? DeviceMediaPolicy::kIncludesVideo
@@ -334,16 +359,37 @@ void LoopingFileCastAgent::CreateAndStartSession() {
 
   AudioCaptureConfig audio_config;
   // Opus does best at 192kbps, so we cap that here.
-  audio_config.bit_rate = 192 * 1000;
+  audio_config.bit_rate = connection_settings_->audio_bitrate != 0
+                              ? connection_settings_->audio_bitrate
+                              : 192 * 1000;
+  if (connection_settings_->target_playout_delay !=
+      std::chrono::milliseconds::zero()) {
+    audio_config.target_playout_delay = connection_settings_->target_playout_delay;
+  }
   VideoCaptureConfig video_config = {
       .codec = connection_settings_->codec,
       // The video config is allowed to use whatever is left over after audio.
-      .max_bit_rate =
-          connection_settings_->max_bitrate -
-          (connection_settings_->should_include_audio ? audio_config.bit_rate
-                                                      : 0)};
+      .max_bit_rate = connection_settings_->video_max_bitrate != 0
+                          ? connection_settings_->video_max_bitrate
+                          : connection_settings_->max_bitrate -
+                                (connection_settings_->should_include_audio
+                                     ? audio_config.bit_rate
+                                     : 0)};
   // Use default display resolution of 1080P.
-  video_config.resolutions.emplace_back(Resolution{1920, 1080});
+  video_config.resolutions.emplace_back(Resolution{
+      connection_settings_->video_width != 0 ? connection_settings_->video_width
+                                              : 1920,
+      connection_settings_->video_height != 0
+          ? connection_settings_->video_height
+          : 1080});
+  if (connection_settings_->video_frames_per_second != 0) {
+    video_config.max_frame_rate =
+        SimpleFraction{connection_settings_->video_frames_per_second, 1};
+  }
+  if (connection_settings_->target_playout_delay !=
+      std::chrono::milliseconds::zero()) {
+    video_config.target_playout_delay = connection_settings_->target_playout_delay;
+  }
 
   OSP_VLOG << "Starting session negotiation.";
   Error negotiation_error;
@@ -366,6 +412,7 @@ void LoopingFileCastAgent::CreateAndStartSession() {
   }
   if (!negotiation_error.ok()) {
     OSP_LOG_ERROR << "Failed to negotiate a session: " << negotiation_error;
+    Shutdown();
   }
 }
 
@@ -373,17 +420,20 @@ void LoopingFileCastAgent::OnNegotiated(
     const SenderSession* session,
     SenderSession::ConfiguredSenders senders,
     capture_recommendations::Recommendations capture_recommendations) {
-  if (senders.video_sender == nullptr ||
+  if (session != current_session_.get() || !connection_settings_ ||
+      senders.video_sender == nullptr ||
       (connection_settings_->should_include_audio &&
        senders.audio_sender == nullptr)) {
     OSP_LOG_ERROR << "Missing required senders, so exiting...";
+    Shutdown();
     return;
   }
 
   current_negotiation_ =
       std::make_unique<SenderSession::ConfiguredSenders>(std::move(senders));
+  current_capture_recommendations_ = std::move(capture_recommendations);
   if (cast_mode_ == CastMode::kMirroring || is_ready_for_remoting_) {
-    StartFileSender();
+    StartMediaSender();
   }
 }
 
@@ -394,8 +444,8 @@ void LoopingFileCastAgent::OnError(const SenderSession* session,
 }
 
 void LoopingFileCastAgent::OnInputMessage(InputMessage message) {
-  if (file_sender_) {
-    file_sender_->OnInputMessage(message);
+  if (media_sender_) {
+    media_sender_->OnInputMessage(message);
   }
   for (const auto& event : message.events()) {
     std::string type_name;
@@ -435,33 +485,57 @@ void LoopingFileCastAgent::OnStatisticsUpdated(
     OSP_VLOG << __func__ << ": updated_stats=" << updated_stats;
   }
   last_reported_statistics_ = std::make_optional<SenderStats>(updated_stats);
+  if (media_sender_) {
+    media_sender_->OnStatisticsUpdated(updated_stats);
+  }
 }
 
 void LoopingFileCastAgent::OnReady() {
   OSP_CHECK_EQ(cast_mode_, CastMode::kRemoting);
   is_ready_for_remoting_ = true;
   if (current_negotiation_) {
-    StartFileSender();
+    StartMediaSender();
   }
 }
 
 void LoopingFileCastAgent::OnPlaybackRateChange(double rate) {
-  file_sender_->SetPlaybackRate(rate);
+  if (media_sender_) {
+    media_sender_->SetPlaybackRate(rate);
+  }
 }
 
-void LoopingFileCastAgent::StartFileSender() {
-  OSP_CHECK(current_negotiation_);
-  file_sender_ = std::make_unique<LoopingFileSender>(
-      *environment_, connection_settings_.value(), current_session_.get(),
-      std::move(*current_negotiation_), [this]() { shutdown_callback_(); });
+void LoopingFileCastAgent::StartMediaSender() {
+  if (media_sender_ || !environment_ || !connection_settings_ ||
+      !current_session_ || !current_negotiation_ ||
+      !current_capture_recommendations_) {
+    OSP_LOG_ERROR << "Cannot start media sender without a negotiated session.";
+    Shutdown();
+    return;
+  }
+  media_sender_ = media_sender_factory_(
+      *environment_, *connection_settings_, current_session_.get(),
+      std::move(*current_negotiation_), std::move(*current_capture_recommendations_),
+      [this]() {
+        if (shutdown_callback_) {
+          const ShutdownCallback callback = std::move(shutdown_callback_);
+          callback();
+        }
+      });
   current_negotiation_.reset();
+  current_capture_recommendations_.reset();
   is_ready_for_remoting_ = false;
+  if (!media_sender_) {
+    OSP_LOG_ERROR << "Media sender factory failed to create a sender.";
+    Shutdown();
+  }
 }
 
 void LoopingFileCastAgent::Shutdown() {
   TRACE_DEFAULT_SCOPED(TraceCategory::kStandaloneSender);
 
-  file_sender_.reset();
+  media_sender_.reset();
+  current_negotiation_.reset();
+  current_capture_recommendations_.reset();
   if (current_session_) {
     OSP_LOG_INFO << "Stopping mirroring session...";
     current_session_.reset();

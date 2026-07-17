@@ -19,7 +19,7 @@
 #include "cast/common/public/trust_store.h"
 #include "cast/sender/public/sender_socket_factory.h"
 #include "cast/standalone_sender/connection_settings.h"
-#include "cast/standalone_sender/looping_file_sender.h"
+#include "cast/standalone_sender/media_sender.h"
 #include "cast/standalone_sender/remoting_sender.h"
 #include "cast/streaming/public/environment.h"
 #include "cast/streaming/public/sender_session.h"
@@ -78,6 +78,10 @@ class LoopingFileCastAgent final
   LoopingFileCastAgent(TaskRunner& task_runner,
                        std::unique_ptr<TrustStore> cast_trust_store,
                        ShutdownCallback shutdown_callback);
+  LoopingFileCastAgent(TaskRunner& task_runner,
+                       std::unique_ptr<TrustStore> cast_trust_store,
+                       ShutdownCallback shutdown_callback,
+                       MediaSenderFactory media_sender_factory);
   ~LoopingFileCastAgent();
 
   // Connect to a Cast Receiver, and start the workflow to establish a
@@ -149,7 +153,7 @@ class LoopingFileCastAgent final
   // Starts the file sender. This may occur when mirroring or remoting is
   // "ready" if the session is already negotiated, or upon session negotiation
   // if the receiver is already ready.
-  void StartFileSender();
+  void StartMediaSender();
 
   // Helper for stopping the current session, and/or unwinding a remote
   // connection request (pre-session). This ensures LoopingFileCastAgent is in a
@@ -159,6 +163,8 @@ class LoopingFileCastAgent final
   // Member variables set as part of construction.
   TaskRunner& task_runner_;
   ShutdownCallback shutdown_callback_;
+  MediaSenderFactory media_sender_factory_;
+  bool uses_default_media_sender_ = false;
   VirtualConnectionRouter router_;
   ConnectionNamespaceHandler connection_handler_;
   SenderSocketFactory socket_factory_;
@@ -187,7 +193,7 @@ class LoopingFileCastAgent final
   // Receiver.
   std::unique_ptr<Environment> environment_;
   std::unique_ptr<SenderSession> current_session_;
-  std::unique_ptr<LoopingFileSender> file_sender_;
+  std::unique_ptr<MediaSender> media_sender_;
 
   // Remoting specific member variables.
   std::unique_ptr<RemotingSender> remoting_sender_;
@@ -195,6 +201,8 @@ class LoopingFileCastAgent final
   // Set when remoting is successfully negotiated. However, remoting streams
   // won't start until `is_ready_for_remoting_` is true.
   std::unique_ptr<SenderSession::ConfiguredSenders> current_negotiation_;
+  std::optional<capture_recommendations::Recommendations>
+      current_capture_recommendations_;
 
   // Set to true once we have gotten news that the mirroring application has
   // been launched at least once.

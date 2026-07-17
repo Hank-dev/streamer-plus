@@ -54,6 +54,7 @@ if (!build_with_chromium) {
     if (have_external_libs) {
       sources += [
         "connection_settings.h",
+        "media_sender.h",
         "looping_file_cast_agent.cc",
         "looping_file_cast_agent.h",
         "looping_file_sender.cc",
@@ -108,5 +109,15 @@ if (!build_with_chromium) {
     sources = [ "main.cc" ]
     configs = [ "../common:certificate_config" ]
     public_configs = [ ":standalone_external_libs" ]
+  }
+
+  group("streamer_plus_app") {
+    testonly = true
+    public_deps = [ "streamer_plus:streamer_plus" ]
+  }
+
+  group("streamer_plus_tests") {
+    testonly = true
+    public_deps = [ "streamer_plus:streamer_plus_unittests" ]
   }
 }

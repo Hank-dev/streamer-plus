@@ -5,6 +5,7 @@
 #ifndef CAST_STANDALONE_SENDER_CONNECTION_SETTINGS_H_
 #define CAST_STANDALONE_SENDER_CONNECTION_SETTINGS_H_
 
+#include <chrono>
 #include <optional>
 #include <string>
 
@@ -26,6 +27,15 @@ struct ConnectionSettings {
   // The maximum bitrate. Default value means a reasonable default will be
   // selected.
   int max_bitrate = 0;
+
+  // Per-stream OFFER values. Zero retains the historical standalone sender
+  // defaults, allowing existing aggregate initialization to remain valid.
+  int video_max_bitrate = 0;
+  int audio_bitrate = 0;
+  int video_width = 0;
+  int video_height = 0;
+  int video_frames_per_second = 0;
+  std::chrono::milliseconds target_playout_delay{};
 
   // Whether the stream should include video, or just be audio only.
   bool should_include_video = true;

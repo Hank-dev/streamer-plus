@@ -40,6 +40,9 @@ class StreamingOpusEncoder {
 
   int GetBitrate() const;
 
+  // Sets an explicit positive libopus bitrate and refreshes codec delay.
+  void SetBitrate(int bits_per_second);
+
   // Sets the encoder back to its "AUTO" bitrate setting, for standard quality.
   // This and UseHighQuality() may be called as often as needed as conditions
   // change.

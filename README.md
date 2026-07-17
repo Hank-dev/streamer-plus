@@ -1,248 +1,154 @@
-# Open Screen Library
+# streamer-plus
 
-The Open Screen Library implements the Open Screen Protocol, Multicast DNS and
-DNS-SD, and the Cast protocols (discovery, application control, and media
-streaming).
+**Fedora → Chromecast full-screen HD+audio low-latency desktop streamer.**
 
-The library consists of feature modules that share a [common platform API](platform/README.md)
-that must be implemented and linked by the embedding application.
+Captures the desktop (PipeWire) and system audio (PulseAudio/PipeWire) via
+[xdg-desktop-portal](https://flatpak.github.io/xdg-desktop-portal/), encodes to
+VP8 + Opus, and streams to a stock Chromecast using the native
+[Open Screen](https://github.com/chromium/openscreen) Cast V2 mirroring protocol
+over TLS on port 8009.
 
-The major feature modules in the library can be used independently and have
-their own documentation:
+No receiver-side app installation. No HTTP/HLS/WebRTC/ffmpeg transport.
+Best-effort ~1–2 s latency on LAN.
 
-- [Cast protocols](cast/README.md) (aka `libcast`)
-- [Open Screen Protocol](osp/README.md)
-- [Multicast DNS and DNS-SD](discovery/README.md)
+## Build
 
-## Getting the code
-
-### Installing depot_tools
-
-Library dependencies are managed using `gclient`, from the
-[depot_tools](https://www.chromium.org/developers/how-tos/depottools) repo.
-
-To get gclient, run the following command in your terminal:
+### Prerequisites (Fedora 44)
 
 ```bash
-    git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+sudo dnf install -y \
+  clang clang-tools-extra lld ninja-build git python3 \
+  gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good \
+  gstreamer1-plugins-bad-free pipewire-gstreamer \
+  libportal libportal-devel \
+  opus opus-devel libvpx libvpx-devel \
+  ffmpeg ffmpeg-devel pkgconf-pkg-config
 ```
 
-Then add the `depot_tools` folder to your `PATH` environment variable.
+### Compile
 
-Note that openscreen does not use other features of `depot_tools` like `repo` or
-`drover`.  However, some `git-cl` functions *do* work, like `git cl try`,
-`git cl format`, `git cl lint`, and `git cl upload.`
-
-### Checking out code
-
-From the parent directory of where you want the openscreen checkout (e.g.,
-`~/my_project_dir`), check out openscreen with the following command:
+This project is built as part of the Open Screen tree. Clone and generate:
 
 ```bash
-    fetch openscreen
+git clone https://github.com/Hank-dev/streamer-plus.git
+cd streamer-plus
+
+gn gen out/Release --args='
+  is_debug=false
+  use_sysroot=false
+  use_custom_libcxx=true
+  clang_base_path="/usr"
+  clang_use_chrome_plugins=false
+  use_lld=true
+  have_ffmpeg=true
+  have_libopus=true
+  have_libvpx=true
+'
+
+ninja -C out/Release \
+  cast/standalone_sender:streamer_plus_app \
+  cast/standalone_sender:streamer_plus_tests
 ```
 
-This command will create an `openscreen/` subdirectory, downloads the source
-code, all third-party dependencies, and the toolchain needed to build things;
-and at their appropriate revisions.
+The binary is at `out/Release/streamer_plus`.
 
-### Syncing your local checkout
-
-To update your local checkout from the openscreen reference repository, just run
+## Usage
 
 ```bash
-   cd ~/my_project_dir/openscreen
-   git pull
-   gclient sync
+# Verify capture pipeline (no Chromecast needed)
+./streamer_plus --capture-self-test
+
+# Dry-run: print resolved config without connecting
+./streamer_plus --dry-run --receiver=192.168.1.50
+
+# Stream to Chromecast
+./streamer_plus --receiver=192.168.1.50
 ```
 
-This will rebase any local commits on the remote top-of-tree, and update any
-dependencies that have changed.
+A screen-sharing dialog will appear via xdg-desktop-portal. After approval,
+desktop video and system audio are streamed to the Chromecast.
 
-## Build setup
+### Options
 
-The main tools required for development are listed below. The `gclient` tool,
-which you installed as part of "Getting the code," will automatically download
-and install a pre-built toolchain that includes `gn`, `clang-format`, `ninja`,
-and `clang`.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--receiver=ADDR[:PORT]` | required | Chromecast IP; bare IP defaults to port 8009 |
+| `--width=N` | 1920 | Capture width (must be even) |
+| `--height=N` | 1080 | Capture height (must be even) |
+| `--fps=N` | 30 | Frames per second |
+| `--video-bitrate=N` | 8000000 | Video bitrate cap (bps) |
+| `--audio-bitrate=N` | 128000 | Audio bitrate (bps) |
+| `--latency-target-ms=N` | 500 | Target playout delay (1–5000 ms) |
+| `--audio-source=NAME` | `@DEFAULT_MONITOR@` | PulseAudio sink monitor source |
+| `--portal-timeout-ms=N` | 120000 | Portal response timeout |
+| `--dry-run` | | Print config and exit |
+| `--capture-self-test` | | Test GStreamer capture pipeline |
+| `--help` | | Show usage |
 
-- Installed by gclient automatically:
-  - Build file generator: `gn` (in `buildtools/`)
-  - Code formatter: `clang-format` (in `buildtools/`)
-  - Builder: `ninja`
-  - Compiler/Linker: `clang`
-- Installed by you:
-  - System-specific libraries and compilers.
+### Telemetry
 
-### System Dependencies
+During streaming, one JSON object per second is printed to stdout:
 
-Building the library and its executables requires certain system-specific
-dependencies (such as `libstdc++` on Linux or `XCode` on macOS). For certain
-targets, like the standalone `cast_sender` and `cast_receiver`, additional
-external media libraries (e.g., FFmpeg, SDL2) are also required.
+```json
+{"event":"streamer_plus_telemetry","state":"streaming","uptime_ms":12345,
+ "capture":{"video_frames":300,"audio_frames":450,...},
+ "encode":{"video_completed":298,"video_bytes":1234567,...},
+ "network":{"estimate_bps":8000000,"video_target_bps":7500000,...}}
+```
 
-For a comprehensive guide on setting up these system-specific and external
-library dependencies for Linux and macOS, please refer to:
+## Architecture
 
-**[→ cast/docs/external_libraries.md](cast/docs/external_libraries.md)**
+```
+┌──────────────────┐    ┌─────────────────────┐    ┌──────────────────┐
+│ xdg-desktop-     │───▶│ GstreamerCapture     │───▶│ DesktopMediaSender│
+│ portal (PipeWire)│    │ (pipewiresrc +       │    │ (VP8 + Opus       │
+│                  │    │  pulsesrc → appsink) │    │  encoders)        │
+└──────────────────┘    └─────────────────────┘    └────────┬─────────┘
+                                                            │
+                                                   ┌────────▼─────────┐
+                                                   │ LoopingFileCast   │
+                                                   │ Agent (Cast V2    │
+                                                   │ TLS → SenderSession│
+                                                   │ → RTP/RTCP)       │
+                                                   └────────┬──────────┘
+                                                            │
+                                                   ┌────────▼──────────┐
+                                                   │ Chromecast (8009)  │
+                                                   └───────────────────┘
+```
 
-### Debug build
+### Key components
 
-Setting the `gn` argument `is_debug=true` enables debug build.
+| File | Role |
+|------|------|
+| `streamer_plus/main.cc` | CLI entry, GLib+OpenScreen dual-loop, agent wiring |
+| `streamer_plus/config.{h,cc}` | Argument parsing, validation, dry-run |
+| `streamer_plus/portal_screencast.{h,cc}` | xdg-desktop-portal screen selection |
+| `streamer_plus/capture.{h,cc}` | GStreamer PipeWire+PulseAudio → bounded queues |
+| `streamer_plus/desktop_media_sender.{h,cc}` | Capture→encoder bridge, congestion, watchdog, telemetry |
+| `media_sender.h` | Injectable media-producer interface |
+| `looping_file_cast_agent.{h,cc}` | Cast V2 control channel (reused, factory-injected) |
+
+## Testing
 
 ```bash
-  gn gen out/debug --args="is_debug=true"
+# Unit tests
+./streamer_plus_unittests
+
+# Capture self-test
+./streamer_plus --capture-self-test
 ```
 
-### GN configuration
+## Limitations
 
-Running `gn args` opens an editor that allows to create a list of arguments
-passed to every invocation of `gn gen`.  `gn args --list` will list all of the
-possible arguments you can set.
+- **No sub-500 ms latency guarantee.** Best-effort ~1–2 s on a healthy LAN.
+- **Hardware-dependent.** Requires a graphical PipeWire session and a
+  Chromecast on the same network.
+- **VP8 video + Opus audio only.** No HEVC/AV1 or AAC.
+- **No transcoding or resampling.** Capture must produce I420 video and
+  F32LE 48 kHz audio matching the negotiated config.
 
-```bash
-  gn args out/debug
-```
+## License
 
-### Providing compilation data to LSP tools (like clangd)
-
-In order for Language Server Protocol (LSP) tools like clangd to properly
-interpret the codebase, they need access to a `compile_commands.json` file.
-
-This file can be generated by `GN` by using the following command:
-
-```sh
-gn gen out/<Default> --add-export-compile-commands="*"
-```
-
-## Building targets
-
-We use the Open Screen Protocol demo application as an example, however, the
-instructions are essentially the same for all executable targets.
-
-``` bash
-  mkdir out/debug
-  gn gen out/debug             # Creates the build directory and necessary ninja files
-  ninja -C out/debug osp_demo  # Builds the executable with ninja
-  ./out/debug/osp_demo         # Runs the executable
-```
-
-The `-C` argument to `ninja` works just like it does for GNU Make: it specifies
-the working directory for the build.  So the same could be done as follows:
-
-``` bash
-  ./gn gen out/debug
-  cd out/debug
-  ninja osp_demo
-  ./osp_demo
-```
-
-After editing a file, only `ninja` needs to be rerun, not `gn`.  If you have
-edited a `BUILD.gn` file, `ninja` will re-run `gn` for you.
-
-We recommend using `autoninja` instead of `ninja`, which takes the same
-command-line arguments but automatically parallelizes the build for your system,
-depending on number of processor cores, amount of RAM, etc.
-
-Also, while specifying build targets is possible while using ninja, typically
-for development it is sufficient to just build everything, especially since the
-Open Screen repository is still quite small. That makes the invocation to the
-build system simplify to:
-
-```bash
-  autoninja -C out/debug
-```
-
-For details on running `osp_demo`, see its [README.md](osp/demo/README.md).
-
-## Building all targets
-
-Running `ninja -C out/debug gn_all` will build all non-test targets in the
-repository.
-
-`gn ls --type=executable out/debug` will list all of the executable targets
-that can be built.
-
-If you want to customize the build further, you can run `gn args out/debug` to
-pull up an editor for build flags. `gn args --list out/debug` prints all of
-the build flags available.
-
-## Building and running unit tests
-
-```bash
-  ninja -C out/debug openscreen_unittests
-  ./out/debug/openscreen_unittests
-```
-
-## Contributing changes
-
-Open Screen library code should follow the [Open Screen Library Style Guide](docs/style_guide.md).
-
-This library uses [Chromium Gerrit](https://chromium-review.googlesource.com/)
-for patch management and code review (for better or worse).  You will need to
-register for an account at `chromium-review.googlesource.com` to upload patches
-for review.
-
-The following sections contain some tips about dealing with Gerrit for code
-reviews, specifically when pushing patches for review, getting patches reviewed,
-and committing patches.
-
-## Uploading a patch for review
-
-The `git cl` tool handles details of interacting with Gerrit (the Chromium code
-review tool) and is recommended for pushing patches for review.  Once you have
-committed changes locally, simply run:
-
-```bash
-  git cl format
-  git cl upload
-```
-
-The first command will will auto-format the code changes using
-`clang-format`. Then, the second command runs the `PRESUBMIT.py` script to check
-style and, if it passes, a newcode review will be posted on
-`chromium-review.googlesource.com`.
-
-If you make additional commits to your local branch, then running `git cl
-upload` again in the same branch will merge those commits into the ongoing
-review as a new patchset.
-
-It's simplest to create a local git branch for each patch you want reviewed
-separately.  `git cl` keeps track of review status separately for each local
-branch.
-
-### Addressing merge conflicts
-
-If conflicting commits have been landed in the repository for a patch in review,
-Gerrit will flag the patch as having a merge conflict.  In that case, use the
-instructions above to rebase your commits on top-of-tree and upload a new
-patchset with the merge conflicts resolved.
-
-### Tryjobs
-
-Clicking the `Cq Dry Run` button (also, confusingly, labeled `Commit Queue +1`)
-will run the current patchset through all LUCI builders and report the results.
-It is always a good idea get a green tryjob on a patch before sending it for
-review to avoid extra back-and-forth.
-
-You can also run `git cl try` from the commandline to submit a tryjob.
-
-### Code reviews
-
-Send your patch to one or more owners from the
-[OWNERS](https://chromium.googlesource.com/openscreen/+/refs/heads/main/OWNERS)
-file for code review.  All patches must receive at least one LGTM by a committer
-and endorsement by two Google employees to pass the `Review-Enforcement` check
-before it can be submitted.
-
-### Submitting patches
-
-After your patch has received one or more LGTMs, commit it by clicking the
-`Submit` button (or, confusingly, `Commit Queue +2`) in Gerrit.  This will run
-your patch through the builders again before committing to the main openscreen
-repository.
-
-## Additional resources
-
-- [Main documentation folder](docs/)
-- [Cast-specific documentation](cast/docs/)
+Built on [Open Screen](https://github.com/chromium/openscreen) (BSD-style
+license). See LICENSE file in the repository root.

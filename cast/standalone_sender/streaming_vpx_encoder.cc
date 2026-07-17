@@ -125,6 +125,13 @@ void StreamingVpxEncoder::EncodeAndSend(
     const VideoFrame& frame,
     Clock::time_point reference_time,
     std::function<void(Stats)> stats_callback) {
+  TryEncodeAndSend(frame, reference_time, std::move(stats_callback));
+}
+
+bool StreamingVpxEncoder::TryEncodeAndSend(
+    const VideoFrame& frame,
+    Clock::time_point reference_time,
+    std::function<void(Stats)> stats_callback) {
   OSP_DCHECK(main_task_runner_.IsRunningOnTaskRunner());
   WorkUnit work_unit;
   work_unit.capture_begin_time = frame.capture_begin_time;
@@ -144,14 +151,14 @@ void StreamingVpxEncoder::EncodeAndSend(
       OSP_LOG_WARN << "VIDEO[" << sender_->config().sender_ssrc
                    << "] Dropping: RTP timestamp is not monotonically "
                       "increasing from last frame.";
-      return;
+      return false;
     }
   }
   if (sender_->GetInFlightMediaDuration(work_unit.rtp_timestamp) >
       sender_->GetMaxInFlightMediaDuration()) {
     OSP_LOG_WARN << "VIDEO[" << sender_->config().sender_ssrc
                  << "] Dropping: In-flight media duration would be too high.";
-    return;
+    return false;
   }
 
   Clock::duration frame_duration = frame.duration;
@@ -184,6 +191,7 @@ void StreamingVpxEncoder::EncodeAndSend(
     encode_queue_.push(std::move(work_unit));
     cv_.notify_one();
   }
+  return true;
 }
 
 void StreamingVpxEncoder::DestroyEncoder() {
