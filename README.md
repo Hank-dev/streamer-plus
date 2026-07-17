@@ -17,7 +17,7 @@ Best-effort ~1–2 s latency on LAN.
 
 ```bash
 sudo dnf install -y \
-  clang clang-tools-extra lld ninja-build git python3 \
+  clang clang-tools-extra lld gn ninja-build git python3 \
   gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good \
   gstreamer1-plugins-bad-free pipewire-gstreamer \
   libportal libportal-devel \
@@ -27,7 +27,8 @@ sudo dnf install -y \
 
 ### Compile
 
-This project is built as part of the Open Screen tree. Clone and generate:
+This repository is a complete fork of the Open Screen tree. Clone it directly;
+no separate Open Screen checkout or `gclient` step is needed:
 
 ```bash
 git clone https://github.com/Hank-dev/streamer-plus.git
@@ -43,6 +44,16 @@ gn gen out/Release --args='
   have_ffmpeg=true
   have_libopus=true
   have_libvpx=true
+  ffmpeg_include_dirs=["/usr/include/ffmpeg"]
+  libopus_include_dirs=["/usr/include/opus"]
+  libvpx_include_dirs=["/usr/include"]
+  external_lib_dirs=["/usr/lib64"]
+  ffmpeg_lib_dirs=["/usr/lib64"]
+  libopus_lib_dirs=["/usr/lib64"]
+  libvpx_lib_dirs=["/usr/lib64"]
+  ffmpeg_libs=["avformat","avcodec","swresample","avutil"]
+  libopus_libs=["opus"]
+  libvpx_libs=["vpx"]
 '
 
 ninja -C out/Release \
@@ -52,17 +63,20 @@ ninja -C out/Release \
 
 The binary is at `out/Release/streamer_plus`.
 
+If GN reports `ERROR Can't find source root`, verify that `pwd` is the cloned
+repository root and that `.gn` exists: `test -f .gn`.
+
 ## Usage
 
 ```bash
 # Verify capture pipeline (no Chromecast needed)
-./streamer_plus --capture-self-test
+./out/Release/streamer_plus --capture-self-test
 
 # Dry-run: print resolved config without connecting
-./streamer_plus --dry-run --receiver=192.168.1.50
+./out/Release/streamer_plus --dry-run --receiver=192.168.1.50
 
 # Stream to Chromecast
-./streamer_plus --receiver=192.168.1.50
+./out/Release/streamer_plus --receiver=192.168.1.50
 ```
 
 A screen-sharing dialog will appear via xdg-desktop-portal. After approval,
@@ -121,22 +135,22 @@ During streaming, one JSON object per second is printed to stdout:
 
 | File | Role |
 |------|------|
-| `streamer_plus/main.cc` | CLI entry, GLib+OpenScreen dual-loop, agent wiring |
-| `streamer_plus/config.{h,cc}` | Argument parsing, validation, dry-run |
-| `streamer_plus/portal_screencast.{h,cc}` | xdg-desktop-portal screen selection |
-| `streamer_plus/capture.{h,cc}` | GStreamer PipeWire+PulseAudio → bounded queues |
-| `streamer_plus/desktop_media_sender.{h,cc}` | Capture→encoder bridge, congestion, watchdog, telemetry |
-| `media_sender.h` | Injectable media-producer interface |
-| `looping_file_cast_agent.{h,cc}` | Cast V2 control channel (reused, factory-injected) |
+| `cast/standalone_sender/streamer_plus/main.cc` | CLI entry, GLib+OpenScreen dual-loop, agent wiring |
+| `cast/standalone_sender/streamer_plus/config.{h,cc}` | Argument parsing, validation, dry-run |
+| `cast/standalone_sender/streamer_plus/portal_screencast.{h,cc}` | xdg-desktop-portal screen selection |
+| `cast/standalone_sender/streamer_plus/capture.{h,cc}` | GStreamer PipeWire+PulseAudio → bounded queues |
+| `cast/standalone_sender/streamer_plus/desktop_media_sender.{h,cc}` | Capture→encoder bridge, congestion, watchdog, telemetry |
+| `cast/standalone_sender/media_sender.h` | Injectable media-producer interface |
+| `cast/standalone_sender/looping_file_cast_agent.{h,cc}` | Cast V2 control channel (reused, factory-injected) |
 
 ## Testing
 
 ```bash
 # Unit tests
-./streamer_plus_unittests
+./out/Release/streamer_plus_unittests
 
 # Capture self-test
-./streamer_plus --capture-self-test
+./out/Release/streamer_plus --capture-self-test
 ```
 
 ## Limitations
