@@ -11,7 +11,29 @@ over TLS on port 8009.
 No receiver-side app installation. No HTTP/HLS/WebRTC/ffmpeg transport.
 Best-effort ~1–2 s latency on LAN.
 
-## Build
+## Download prebuilt binary
+
+A prebuilt Fedora 44 x86-64 release is available at
+https://github.com/Hank-dev/streamer-plus/releases/tag/v0.1.0.
+
+Install its runtime dependencies:
+
+```bash
+sudo dnf install -y \
+  gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good \
+  pipewire-gstreamer libportal opus libvpx
+```
+
+Download `streamer-plus-v0.1.0-fedora44-x86_64.tar.gz` from the release, then
+extract and run it:
+
+```bash
+tar -xzf streamer-plus-v0.1.0-fedora44-x86_64.tar.gz
+./streamer_plus --capture-self-test
+./streamer_plus --receiver=<CHROMECAST_IP>
+```
+
+## Build from source
 
 ### Prerequisites (Fedora 44)
 
@@ -25,13 +47,20 @@ sudo dnf install -y \
   ffmpeg ffmpeg-devel pkgconf-pkg-config
 ```
 
-### Compile
+### Checkout and compile
 
-This repository is a complete fork of the Open Screen tree. Clone it directly;
-no separate Open Screen checkout or `gclient` step is needed:
+Use depot_tools and `gclient` to create the checkout. Open Screen tracks
+DEPS-managed dependency roots, including `build/`, as gitlinks. A plain
+`git clone` contains the streamer source and `.gn`, but does not populate the
+DEPS-managed build, toolchain, and third-party directories.
 
 ```bash
-git clone https://github.com/Hank-dev/streamer-plus.git
+git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$HOME/depot_tools"
+export PATH="$HOME/depot_tools:$PATH"
+mkdir streamer-plus-checkout
+cd streamer-plus-checkout
+gclient config https://github.com/Hank-dev/streamer-plus.git
+gclient sync --no-history
 cd streamer-plus
 
 gn gen out/Release --args='
@@ -63,8 +92,14 @@ ninja -C out/Release \
 
 The binary is at `out/Release/streamer_plus`.
 
-If GN reports `ERROR Can't find source root`, verify that `pwd` is the cloned
-repository root and that `.gn` exists: `test -f .gn`.
+### Troubleshooting
+
+- If `.gn` is missing, you are in the wrong directory or are using an obsolete
+  or incomplete clone. From the source-build checkout, run `cd streamer-plus`
+  and verify it with `test -f .gn`.
+- If `.gn` is present but `build/config/BUILDCONFIG.gn` is missing,
+  `gclient sync --no-history` was not run or did not complete. Return to the
+  `streamer-plus-checkout` directory and run it successfully before `gn gen`.
 
 ## Usage
 
